@@ -61,8 +61,10 @@ def init_phi_multi_jax(nc, nx, ny, mean_phi=None, noise_amp=0.01, seed=0, sigma_
     rng = np.random.default_rng(seed)
     if mean_phi is None:
         mean_phi = np.full(nc, 1.0 / nc, dtype=float)
-    mean_phi = np.asarray(mean_phi, dtype=float)
-    assert mean_phi.size == nc
+    mean_phi = np.asarray(mean_phi, dtype=float).ravel()
+    if mean_phi.size == 1:
+        mean_phi = np.full(nc, float(mean_phi), dtype=float)
+    assert mean_phi.size == nc, f"mean_phi.size={mean_phi.size} != nc={nc}"
 
     phi = np.zeros((nc, nx, ny), dtype=float)
     for i in range(nc):

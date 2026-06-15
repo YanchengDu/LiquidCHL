@@ -133,7 +133,7 @@ def train_contrastive_hebbian_newscheme(
         phi_initial_list = [
             init_phi_multi_jax(
                 nc=nc, nx=nx, ny=ny,
-                mean_phi=jnp.mean(jnp.array(training_memories)),
+                mean_phi=np.mean(np.array(training_memories), axis=0),
                 noise_amp=noise_amp,
                 seed=epoch_seed,
                 sigma_spatial=sigma_spatial,
