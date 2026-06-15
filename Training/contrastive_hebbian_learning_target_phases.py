@@ -1,9 +1,10 @@
-"""Contrastive Hebbian learning (daydreaming) training for Model A.
+"""Contrastive Hebbian learning (daydreaming) training for Model A — target phase retrieval task.
 
 Functions here train the interaction matrix `chi` (and chemical potential
 offsets `miu`) for the Model A dynamics using a contrastive Hebbian /
 daydreaming scheme with an AdamW optimizer, plus helpers for evaluating
-recall/retrieval performance of a trained model.
+recall/retrieval performance of a trained model against a fixed set of
+target memories (phases).
 """
 
 import time
@@ -31,12 +32,11 @@ def daydreaming_contrastive_hebbian_learning_lagrange_JAX_fast_sample_adamw(
     target_memories, chi_initial, miu_initial,
     V=1.0, gamma_dynamics=1.0, dt_dynamics=1e-2, n_steps_dynamics=30000,
     gamma_learning=10.0, n_epochs=200, clamped=None,
-    n_sample=None, sample_random_each_epoch=False,
-    p_boundary=0.3, t_end=300.0, width=0.02,
+    n_sample=None, t_end=300.0,
     weight_decay=1e-5,
     print_energy=True, key_seed=42
 ):
-    target_memories = None if target_memories is None else jnp.array(target_memories)
+    target_memories = jnp.array(target_memories)
     chi_initial = jnp.array(chi_initial)
     miu_initial = jnp.array(miu_initial)
 
@@ -97,47 +97,6 @@ def daydreaming_contrastive_hebbian_learning_lagrange_JAX_fast_sample_adamw(
 
         return grad_chi, grad_miu, energy_diff, true_error
 
-    # ---------------- Random-memory generator ----------------
-    def make_random_memories(key, sample_size, N):
-        keys = jax.random.split(key, sample_size + 1)
-        key_next = keys[0]
-        mem_keys = keys[1:]
-
-        def make_one(k):
-            k1, k2, k3, k4 = jax.random.split(k, 4)
-            m1 = jax.random.uniform(k3, ()) < p_boundary
-            m2 = jax.random.uniform(k4, ()) < 0.5
-
-            # sample uniform
-            inp0_u = jax.random.uniform(k1, shape=(), minval=0.0, maxval=0.25)
-            inp1_u = jax.random.uniform(k2, shape=(), minval=0.0, maxval=0.25)
-            # sample near boundary
-            inp0_b1 = jax.random.uniform(k1, shape=(), minval=0.125 - width, maxval=0.125 + width)
-            inp1_b1 = jax.random.uniform(k2, shape=(), minval=0.125 - width, maxval=0.25)
-
-            inp0_b = jnp.where(m2, inp0_b1, inp1_b1)
-            inp1_b = jnp.where(m2, inp1_b1, inp0_b1)
-
-            inp0 = jnp.where(m1, inp0_u, inp0_b)
-            inp1 = jnp.where(m1, inp1_u, inp1_b)
-
-            out = jnp.zeros(N)
-            out = out.at[0].set(inp0).at[1].set(inp1)
-
-            cond = (inp0 > 0.125) & (inp1 > 0.125)
-            hi, lo = 1.1 / N, 0.25 / N
-            val2 = jnp.where(cond, hi, lo)
-            val3 = jnp.where(cond, lo, hi)
-            out = out.at[2].set(val2).at[3].set(val3)
-
-            sum_fixed = jnp.sum(out[:4])
-            sum_rem = jnp.sum(out[4:])
-            out = out.at[4:].set(out[4:] / sum_rem * (1 - sum_fixed))
-            return out
-
-        mems = jax.vmap(make_one)(mem_keys)
-        return key_next, mems
-
     # ---------------- AdamW optimizer ----------------
     params = (chi_initial, miu_initial)
     optimizer = optax.adamw(learning_rate=gamma_learning, weight_decay=weight_decay)
@@ -145,16 +104,12 @@ def daydreaming_contrastive_hebbian_learning_lagrange_JAX_fast_sample_adamw(
 
     # ---------------- Batched Update ----------------
     def batched_update(key, chi, miu, opt_state, clamped):
-        sample_size = n_sample if n_sample is not None else (target_memories.shape[0] if target_memories is not None else 1)
-        N = chi.shape[0]
-        if sample_random_each_epoch or (target_memories is None):
-            key, sampled_memories = make_random_memories(key, sample_size, N)
-        else:
-            num_memories = target_memories.shape[0]
-            key, subkey = jax.random.split(key)
-            replace = sample_size > num_memories
-            indices = jax.random.choice(subkey, num_memories, (sample_size,), replace=replace)
-            sampled_memories = target_memories[indices]
+        sample_size = n_sample if n_sample is not None else target_memories.shape[0]
+        num_memories = target_memories.shape[0]
+        key, subkey = jax.random.split(key)
+        replace = sample_size > num_memories
+        indices = jax.random.choice(subkey, num_memories, (sample_size,), replace=replace)
+        sampled_memories = target_memories[indices]
 
         mem_keys = jax.random.split(key, sample_size + 1)
         key = mem_keys[0]
@@ -230,10 +185,10 @@ def _plot_grayscale_blocks(values, orientation='horizontal', cmap='gray', figsiz
 
 def CHL_training_hidden(target_memories, n_species, n_epochs, clamped=None,
                          chi_prev=None, miu_prev=None,
-                         gamma_learning=0.5, n_sample=50, p_boundary=0.3,
-                         width=0.05, dt_dynamics=1e-1, max_steps=30000, t_end=300.0,
+                         gamma_learning=0.5, n_sample=50,
+                         dt_dynamics=1e-1, max_steps=30000, t_end=300.0,
                          verbose=True, seed=None):
-    """Train chi/miu via contrastive Hebbian learning.
+    """Train chi/miu via contrastive Hebbian learning on a fixed set of target memories.
 
     If `chi_prev`/`miu_prev` are given (e.g. from a previous call), training
     continues from those values instead of the Hebbian initial guess.
@@ -272,9 +227,6 @@ def CHL_training_hidden(target_memories, n_species, n_epochs, clamped=None,
         gamma_learning=gamma_learning,
         n_epochs=n_epochs,
         n_sample=n_sample,
-        sample_random_each_epoch=False,
-        p_boundary=p_boundary,
-        width=width,
         t_end=t_end,
         clamped=clamped,
         print_energy=False,
